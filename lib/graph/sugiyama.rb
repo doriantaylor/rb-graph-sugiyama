@@ -55,6 +55,15 @@ module Graph::Sugiyama
     node
   end
 
+  def remove_edge s, t, nodes, fwd, rev
+    fwd[s].delete t
+    rev[t].delete s
+    nodes[s][:outdegree] -= 1
+    nodes[t][:indegree]  -= 1
+
+    [s, t]
+  end
+
   public
 
   # Returns a modified graph and the set of edges that were reversed.
@@ -67,42 +76,57 @@ module Graph::Sugiyama
                       end.values_at(:nodes, :fwd, :rev)
 
     # this is something we keep
-    edges ||= fwd.dup
+    edges = fwd.dup
 
     # this is something we destroy
     n = nodes.dup
 
-    # what follows is algorithm 13.3 from healy/nikolov graph drawing
-    # handbook chapter 13 on hierarchical drawing algorithms
+    # what follows is algorithm 13.3 (greedy cycle removal) from
+    # healy/nikolov graph drawing handbook chapter 13 on hierarchical
+    # drawing algorithms.
 
-    sl = Set.new
-    sr = Set.new
+    # left and right node sequences
+    seql = []
+    seqr = []
 
     until n.empty? do
       # detect sinks
       while v = n.keys.detect { |x| n[x][:outdegree] == 0 }
         remove v, n, fwd, rev
-        sr << v
+        seqr.unshift v # prepend to sink the right side
       end
       # detect sources
       while u = n.keys.detect { |x| n[x][:indegree] == 0 }
         remove u, n, fwd, rev
-        sl << u
+        seql.push u # append the source to the left side
       end
 
       unless n.empty?
         w = n.keys.sort do |a, b|
+          # outdegree minus indegree gives us 
           x = (n[b][:outdegree] - n[b][:indegree]) <=>
             (n[a][:outdegree] - n[a][:indegree])
-          # sort
+          # sort by node lexical representation if tied so we always
+          # get the same result
           x == 0 ? a <=> b : x
         end.first
 
         remove w, n, fwd, rev
 
-        sl << w
+        seql.push w
       end
     end
+
+    # now any edges going from higher up the sequence to lower
+    # constitute a feedback arc set. we make this into a hash so we
+    # can look it up.
+    seq = {}
+    (seql + seqr).each_with_index { |x, i| seq[x] = i }
+
+    fas = edges.map do |s, tgt|
+      # keep the leftward-pointing edges (source has higher seq number)
+      [s, tgt.dup.keep_if { |t| seq[s] > seq[t] }]
+    end.reject { |x| x.last.empty? }.to_h
 
     [graph, edges]
   end
