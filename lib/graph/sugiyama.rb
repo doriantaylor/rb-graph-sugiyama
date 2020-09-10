@@ -128,7 +128,7 @@ module Graph::Sugiyama
       [s, tgt.dup.keep_if { |t| seq[s] > seq[t] }]
     end.reject { |x| x.last.empty? }.to_h
 
-    [graph, edges]
+    { nodes: nodes, edges: edges, fas: fas }
   end
 
   # Returns a modified graph (with dummy nodes) and an array of layer

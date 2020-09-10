@@ -6,6 +6,18 @@ require 'set'
 # use with the Sugiyama framework
 class Graph::Implementation
 
+  private
+
+  def initialize_copy orig
+    # just dup these members individually; they can all be treated the same
+    %w[@nodes @fwd @rev].each do |sym|
+      instance_variable_set sym,
+        orig.instance_variable_get(sym).map { |k, v| [k, v.dup] }.to_h
+    end
+  end
+
+  public
+
   def initialize nodes: [], edges: {}
     @nodes = {} # node metadata (just degrees for now)
     @fwd   = {} # forward edges
@@ -16,10 +28,6 @@ class Graph::Implementation
     edges.each do |s, tgt|
       (tgt.respond_to?(:to_a) ? tgt.to_a : [tgt]).each { |t| add_edge s, t }
     end
-  end
-
-  def initialize_copy orig
-    warn 'dupped'
   end
 
   def nodes
@@ -51,9 +59,9 @@ class Graph::Implementation
     [[@rev, @fwd, :outdegree], [@fwd, @rev, :indegree]].each do |a, b, k|
       if a[node]
         a[node].each do |s|
-          b[s].delete? node  # remove the backreference
-          b.delete s if b[s].empty?
-          @nodes[s][k] -= 1  # decrement the degree
+          b[s].delete node          # remove the backreference
+          b.delete s if b[s].empty? # get rid of the entry entirely (?)
+          @nodes[s][k] -= 1         # decrement the degree
         end
       end
     end
