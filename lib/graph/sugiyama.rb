@@ -70,19 +70,12 @@ module Graph::Sugiyama
   class << self
 
     # Returns a modified graph and the set of edges that were reversed.
-    def remove_cycles graph # graph: nil, nodes: {}, edges: {}
-      # this 
-      nodes, fwd, rev = if graph and graph.respond_to? :each_vertex
-                          prepare_rgl graph
-                        else
-                          { nodes: nodes, fwd: edges, rev: make_rev(edges) }
-                        end.values_at(:nodes, :fwd, :rev)
+    def remove_cycles graph
+      graph = Graph::Implementation.from_rgl graph unless
+        graph.is_a? Graph::Implementation
 
-      # this is something we keep
-      edges = fwd.dup
-
-      # this is something we destroy
-      n = nodes.dup
+      # give us a duplicate
+      g = graph.dup
 
       # what follows is algorithm 13.3 (greedy cycle removal) from
       # healy/nikolov graph drawing handbook chapter 13 on hierarchical
@@ -92,30 +85,27 @@ module Graph::Sugiyama
       seql = []
       seqr = []
 
-      until n.empty? do
-        # detect sinks
-        while v = n.keys.detect { |x| n[x][:outdegree] == 0 }
-          remove v, n, fwd, rev
+      until g.empty? do
+        while v = g.nodes.detect { |n| g.sink? n }
+          g.remove v
           seqr.unshift v # prepend to sink the right side
         end
-        # detect sources
-        while u = n.keys.detect { |x| n[x][:indegree] == 0 }
-          remove u, n, fwd, rev
+
+        while u = g.nodes.detect { |n| g.source? n }
+          g.remove u
           seql.push u # append the source to the left side
         end
 
-        unless n.empty?
-          w = n.keys.sort do |a, b|
-            # outdegree minus indegree gives us
-            x = (n[b][:outdegree] - n[b][:indegree]) <=>
-              (n[a][:outdegree] - n[a][:indegree])
-            # sort by node lexical representation if tied so we always
-            # get the same result
+        unless g.empty?
+          # pick the first node with the highest net degree
+          w = g.nodes.sort do |a, b|
+            x = (g.outdegree(b) - g.indegree(b)) <=>
+              (g.outdegree(a) - g.indegree(a))
+            # fall back to lexical sort to guarantee consistent results
             x == 0 ? a <=> b : x
           end.first
 
-          remove w, n, fwd, rev
-
+          g.remove w
           seql.push w
         end
       end
@@ -126,12 +116,14 @@ module Graph::Sugiyama
       seq = {}
       (seql + seqr).each_with_index { |x, i| seq[x] = i }
 
-      fas = edges.map do |s, tgt|
-        # keep the leftward-pointing edges (source has higher seq number)
-        [s, tgt.dup.keep_if { |t| seq[s] > seq[t] }]
-      end.reject { |x| x.last.empty? }.to_h
+      # give us a new duplicate
+      g = graph.dup
 
-      { nodes: nodes, edges: edges, fas: fas }
+      # invert the edges on the duplicate
+      graph.edges { |s, t| g.invert s, t if seq[s] > seq[t] }
+
+      # return the duplicate
+      g
     end
 
     # Returns a modified graph (with dummy nodes) and an array of layer

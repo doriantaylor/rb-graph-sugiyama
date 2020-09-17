@@ -58,6 +58,14 @@ class Graph::Implementation
     end
   end
 
+  # Test whether the graph is empty.
+  #
+  # @return [true,false]
+  #
+  def empty?
+    @nodes.empty?
+  end
+
   # Return the nodes in the graph.
   #
   # @yield [node] Iterate over the nodes.
@@ -80,6 +88,56 @@ class Graph::Implementation
       @fwd.each { |s, tgt| tgt.each { |t| block.call s, t } }
     else
       @fwd.map { |s, tgt| tgt.map { |t| [s, t] } }.flatten 1
+    end
+  end
+
+  # Determine if a node is a source (zero indegree).
+  #
+  # @return [true, false, nil] whether the node is a source or nil if the
+  #  node is not present in the graph
+  #
+  def source? node
+    return unless @nodes[node]
+    @nodes[node][:indegree] == 0
+  end
+
+  # Determine if a node is a sink (zero outdegree).
+  #
+  # @return [true, false, nil] whether the node is a sink or nil if the
+  #  node is not present in the graph
+  #
+  def sink? node
+    return unless @nodes[node]
+    @nodes[node][:outdegree] == 0
+  end
+
+  # Return the set of sources (zero-indegree) nodes. An optional block
+  # affords iterating over the nodes.
+  #
+  # @yield [node] A block to iterate over source nodes
+  # @yieldparam node [Object] A source node
+  # @return [Array] The set of sources
+  #
+  def sources &block
+    if block
+      @nodes.each { |k, v| block.call k if v[:indegree] == 0 }
+    else
+      @nodes.select { |_, v| v[:indegree] == 0 }.map &:first
+    end
+  end
+
+  # Return the set of sinks (zero-outdegree) nodes. An optional block
+  # affords iterating over the nodes.
+  #
+  # @yield [node] A block to iterate over sink nodes
+  # @yieldparam node [Object] A sink node
+  # @return [Array] The set of sinks
+  #
+  def sinks &block
+    if block
+      @nodes.each { |k, v| block.call k if v[:outdegree] == 0 }
+    else
+      @nodes.select { |_, v| v[:outdegree] == 0 }.map &:first
     end
   end
 
