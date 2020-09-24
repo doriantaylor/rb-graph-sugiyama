@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 require 'graph/sugiyama/version'
 require 'graph/implementation'
 
@@ -6,64 +7,6 @@ require 'set'
 module Graph::Sugiyama
 
   private
-
-  # Disassemble an RGL::DirectedAdjacencyGraph (into a structure that
-  # is almost identical)
-  def prepare_rgl graph
-    # we cache reverse edges as well as forward
-    nodes, fwd, rev = {}, {}, {}
-
-    graph.each_vertex do |s|
-      # we cache the degrees so we don't have to recompute them every time
-      nodes[s] ||= { indegree: 0, outdegree: 0 }
-
-      graph.each_adjacent(s) do |o|
-        nodes[o] ||= { indegree: 0, outdegree: 0 }
-
-        (fwd[s] ||= Set.new) << o
-        (rev[o] ||= Set.new) << s
-
-        nodes[s][:outdegree] += 1
-        nodes[o][:indegree]  += 1
-      end
-    end
-
-    { nodes: nodes, fwd: fwd, rev: rev }
-  end
-
-  # create a reverse structure
-  def make_rev edges
-    rev = {}
-
-    # iterate over the target values to make keys and add to a new set
-    edges.each { |src, tgt| tgt.each { |t| (rev[t] ||= Set.new) << src } }
-
-    rev
-  end
-
-  # remove a node from our internal graph
-  def remove node, nodes, fwd, rev
-    [[rev, fwd, :outdegree], [fwd, rev, :indegree]].each do |a, b, k|
-      a[node].each do |s|
-        b[s].delete? node # remove the backreference
-        nodes[s][k] -= 1  # decrement the degree
-      end
-    end
-
-    # now delete the node from each hash
-    [fwd, rev, nodes].each { |x| x.delete node }
-
-    node
-  end
-
-  def remove_edge s, t, nodes, fwd, rev
-    fwd[s].delete t
-    rev[t].delete s
-    nodes[s][:outdegree] -= 1
-    nodes[t][:indegree]  -= 1
-
-    [s, t]
-  end
 
   public
 
@@ -126,9 +69,103 @@ module Graph::Sugiyama
       g
     end
 
+    private
+
+    # GKNV93 p. 9: An initial feasible ranking is computed. For
+    # brevity, init_rank is not given here. Our version keeps nodes in
+    # a queue. Nodes are placed in the queue when they have no
+    # unscanned in-edges. As nodes are taken off the queue, they are
+    # assigned the least rank that satisfies their in-edges, and their
+    # out-edges are marked as scanned. In the simplest case, where δ =
+    # 1 for all edges, this corresponds to viewing the graph as a
+    # poset and assigning the minimal elements to rank 0. These nodes
+    # are removed from the poset and the new set of minimal elements
+    # are assigned rank 1, etc.
+
+    # my interpretation: 
+    def initial_rank graph # , delta = 1 # delta (min length) is tbd
+      scanned = {} # { source => [target] }
+      rank    = {} # { node => rank }
+      # give us the nodes sorted by outdegree - indegree
+      queue   = graph.nodes_by_degree
+
+      # XXX THIS MAY LOOP FOREVER IF THE GRAPH HAS CYCLES
+      until queue.empty?
+        node = queue.shift # shift a node off the queue
+        # test if inbound edges have been scanned
+        nin  = graph.neighbours_in node
+        if nin.empty? or
+            nin.reject { |n| scanned.fetch(n, []).include? node }.empty?
+          # highest indegree rank plus one; defaults to zero
+          rank[node] = (rank.values_at(*nin).compact.max || -1) + 1
+
+          # record the outbound edges as having been scanned
+          s = scanned[node] ||= Set.new
+          s |= graph.neighbours_out(node).to_set
+        else
+          # otherwise push the node back onto the end
+          queue.push node
+        end
+      end
+
+      # might as well return the hash?
+      rank
+    end
+
+    # The function tight_tree finds a maximal tree of tight edges
+    # containing some fixed node and returns the number of nodes in
+    # the tree. Note that such a maximal tree is just a spanning tree
+    # for the subgraph induced by all nodes reachable from the fixed
+    # node in the underlying undirected graph using only tight
+    # edges. In particular, all such trees have the same number of
+    # nodes.
+    def tight? graph, rank
+      
+    end
+
+    def slack graph, rank, source, target
+
+    end
+
+    # GKNV93 p. 10: The init_cutvalues function computes the cut
+    # values of the tree edges. For each tree edge, this is computed
+    # by marking the nodes as belonging to the head or tail component,
+    # and then performing the sum of the signed weights of all edges
+    # whose head and tail are in different components, the sign being
+    # negative for those edges going from the head to the tail
+    # component.
+    def initial_cut_values
+    end
+
+    def feasible_tree graph
+      rank = initial_rank graph
+      # { source => { target => cutvalue } }
+
+      [tree, rank]
+    endg
+
+    def leave_edge tree
+    end
+
+    def enter_edge tree
+    end
+
+    public
+
     # Returns a modified graph (with dummy nodes) and an array of layer
     # assignments.
     def assign_layers graph, concentrate: false
+      graph = Graph::Implementation.from_rgl graph unless
+        graph.is_a? Graph::Implementation
+
+      # { source => { target => cutvalue } }
+      tree, rank = feasible_tree graph
+
+      while e = leave_edge(tree)
+      end
+
+      normalize tree # rebases ranks starting at zero
+      balance tree # moves ambivalent nodes to less-populated ranks
 
       # [graph, layers]
     end

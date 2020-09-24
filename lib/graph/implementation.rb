@@ -85,10 +85,54 @@ class Graph::Implementation
   #
   def edges &block
     if block
-      @fwd.each { |s, tgt| tgt.each { |t| block.call s, t } }
+      @fwd.each { |s, tgt| tgt.keys.each { |t| block.call s, t } }
     else
-      @fwd.map { |s, tgt| tgt.map { |t| [s, t] } }.flatten 1
+      @fwd.map { |s, tgt| tgt.keys.map { |t| [s, t] } }.flatten 1
     end
+  end
+
+  # Returns the nodes ranked by their (outdegree - indegree).
+  #
+  # @yield [node, outdegree, indegree]
+  # @return [Array] the ranked nodes
+  #
+  def nodes_by_degree &block
+    # note sort turns a hash into an array of (key-value) pairs
+    @nodes.sort do |a, b|
+      al = a.last
+      bl = b.last
+      # compare first by descending degree difference
+      cmp = bl[:outdegree] - bl[:indegree] <=> al[:outdegree] - al[:indegree]
+      if cmp == 0 # tiebreaker conditions
+        cmp = bl[:outdegree] <=> al[:outdegree] # descending outdegree
+        cmp = al[:indegree]  <=> bl[:indegree] if cmp == 0 # ascending indegree
+        cmp = a.first.to_s <=> b.first.to_s if cmp == 0 # ascending lexical
+      end
+      cmp
+    end.map do |node, meta|
+      block.call(node, *meta.values_at(:outdegree, :indegree)) if block
+      n
+    end
+  end
+
+  # Gets or sets the rank of the node.
+  #
+  # @param node [Object]
+  # @param value [Integer,#to_i]
+  # @return [Integer] the current or previous rank if a new one is set
+  #
+  def rank_for node, value = nil
+    raise ArgumentError, "Graph does not contain #{node}" unless @nodes[node]
+
+    return @nodes[node][:rank] ||= 0 unless value
+
+    raise ArgumentError, "Value is not a non-negative integer" unless
+      value.respond_to? :to_i and value.to_i >= 0
+
+    old = @nodes[node][:rank]
+    @nodes[node][:rank] = value.to_i
+
+    old
   end
 
   # Determine if a node is a source (zero indegree).
@@ -171,6 +215,62 @@ class Graph::Implementation
     @nodes[node][:outdegree] + @nodes[node][:indegree]
   end
 
+  # Return the nodes adjacent on outbound edges to the given node or
+  # nil if the node does not exist.
+  #
+  # @param node [Object]
+  # @return [nil, Array]
+  #
+  def neighbours_out node
+    return unless @nodes[node]
+    @fwd.fetch(node, {}).keys
+  end
+  alias_method :neighbors_out, :neighbours_out
+
+  # Return the nodes adjacent on inbound edges to the given node or
+  # nil if the node does not exist.
+  #
+  # @param node [Object]
+  # @return [nil, Array]
+  #
+  def neighbours_in node
+    return unless @nodes[node]
+    @rev.fetch(node, {}).keys
+  end
+  alias_method :neighbors_in, :neighbours_in
+
+  # Return the intersection of adjacent nodes or nil if the node does
+  # not exist.
+  #
+  # @param node [Object]
+  # @return [nil, Array]
+  #
+  def neighbours node
+    return unless @nodes[node]
+    (neighbours_out(node) + neighbours_in(node)).uniq
+  end
+  alias_method :neighbors, :neighbours
+  alias_method :incident, :neighbours
+
+  # Return whether a node is present in the graph.
+  #
+  # @param node [Object]
+  # @return [true,false]
+  #
+  def node? node
+    !!@nodes[node]
+  end
+
+  # Return whether an edge is present in the graph.
+  #
+  # @param source [Object]
+  # @param target [Object]
+  # @return [true,false]
+  #
+  def edge? source, target
+    @fwd.fetch(source, {}).key? target
+  end
+
   # Add a node to the graph.
   #
   # @param node [Object] The node to add.
@@ -208,17 +308,23 @@ class Graph::Implementation
   #
   # @param source [Object] The source node
   # @param target [Object] The target node
+  # @param weight [Numeric]
   # @return [Array,nil] The source-target pair or nil
   #  if the edge is already there.
   #
-  def add_edge source, target
-    @fwd[source] ||= Set.new
-    @rev[target] ||= Set.new
+  def add_edge source, target, weight: 1
+    raise ArgumentError, "Weight must be a number, not #{weight}" unless
+      weight.is_a? Numeric
+
+    @fwd[source] ||= {}
+    @rev[target] ||= {}
 
     [source, target].each { |x| add x }
 
     # assume this is symmetric, that @rev[t] also does not include s
-    return if @fwd[source].include? target
+    return if @fwd[source].key? target
+
+    @fwd[source][target] = @rev[target][source] = { weight: weight }
 
     @fwd[source] << target
     @rev[target] << source
@@ -236,7 +342,7 @@ class Graph::Implementation
   #  if the edge is not present.
   #
   def remove_edge source, target
-    return unless @fwd[source].include? target
+    return unless @fwd[source].key? target
 
     @fwd[source].delete target
     @rev[target].delete source
@@ -256,4 +362,112 @@ class Graph::Implementation
   def invert source, target
     add_edge target, source if remove_edge source, target
   end
+
+  private
+
+  # Sets an initial ranking. Don't run this if the graph has cycles.
+  #
+  # @return [Hash] The mapping of nodes to ranks
+  #
+  def initial_rank
+    scanned = {} # { source => [target] }
+    rank    = {} # { node => rank }
+    # give us the nodes sorted by outdegree - indegree
+    queue   = graph.nodes_by_degree
+
+    # XXX THIS MAY LOOP FOREVER IF THE GRAPH HAS CYCLES
+    until queue.empty?
+      node = queue.shift # shift a node off the queue
+      # test if inbound edges have been scanned
+      nin  = neighbours_in node
+      if nin.empty? or
+          nin.reject { |n| scanned.fetch(n, []).include? node }.empty?
+        # highest indegree rank plus one; defaults to zero
+        rank_for node,
+          rank[node] = (rank.values_at(*nin).compact.max || -1) + 1
+
+        # record the outbound edges as having been scanned
+        s = scanned[node] ||= Set.new
+        s |= neighbours_out(node).to_set
+      else
+        # otherwise push the node back onto the end
+        queue.push node
+      end
+    end
+
+    # might as well return the hash?
+    rank
+  end
+
+  def initial_cut_values
+  end
+
+  # Return all the (undirected) connected components in the graph.
+  #
+  # @return [Array<Set>] An array of nodes representing components.
+  #
+  def components
+    pool = @nodes.keys.to_set
+    out  = []
+
+    until pool.empty?
+      work  = Set.new           # initialize a working set;
+      queue = [pool.to_a.first] # initialize a queue
+
+      until queue.empty?
+        node = queue.shift # get the node off the queue;
+        work << node       # add node to working set
+
+        # append new neighbours to queue
+        queue += neighbours(node).reject { |n| work.include? n }
+      end
+
+      pool -= work # remove working set from pool;
+      out  << work # add it to the list of connected components
+    end
+    
+    out
+  end
+
+  # we just want this to return true if 
+  def tight?
+    # note if the graph is not fully connected this will fail
+  end
+
+  def slack source, target
+    return unless @fwd.fetch(source, {})[target]
+  end
+
+  def feasible_tree
+    initial_rank
+
+    until tight?
+      # 
+    end
+
+    initial_cut_values
+  end
+
+  def leave_edge
+  end
+
+  def enter_edge
+  end
+
+  def rank
+    feasible_tree
+
+    while (s, t = leave_edge)
+      u, v = enter_edge s, t
+      exchange [s, t], [u, v]
+    end
+
+    normalize
+
+    balance
+  end
+
+  #def edge_weight source, target, value = nil
+  #end
+
 end
