@@ -120,11 +120,9 @@ module Graph::Sugiyama
     # edges. In particular, all such trees have the same number of
     # nodes.
     def tight? graph, rank
-      
     end
 
     def slack graph, rank, source, target
-
     end
 
     # GKNV93 p. 10: The init_cutvalues function computes the cut
@@ -142,7 +140,7 @@ module Graph::Sugiyama
       # { source => { target => cutvalue } }
 
       [tree, rank]
-    endg
+    end
 
     def leave_edge tree
     end
