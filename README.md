@@ -33,7 +33,8 @@ program `dot` in the Graphviz package from AT&T. Why reinvent the wheel?
   process, potentially generating results that vary from `dot`.
 
 The purpose of this module is to accumulate the ways the Sugiyama
-framework can vary, beginning with a reinterpretation of `dot`.
+framework can vary, beginning with a reinterpretation of `dot`. Once
+the pattern is stable, it can be ported to other languages.
 
 ## References
 
@@ -44,7 +45,7 @@ framework can vary, beginning with a reinterpretation of `dot`.
 ## Synopsis
 
 ```ruby
-require 'graph-sugiyama'
+require 'graph-sugiyama' # or 'graph/sugiyama'
 
 # we presume you already have a graph of some kind, such that
 # you can make these structures:

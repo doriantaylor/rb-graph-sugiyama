@@ -16,6 +16,29 @@ class Graph::Implementation
     end
   end
 
+  #
+  def spanning_tree_internal origin, seen = {}
+    return seen if seen.include?(origin) or !@nodes.include?(origin)
+    seen[origin] = @nodes[origin]
+    neighbours(origin).each { |n| spanning_tree_internal n, seen }
+
+    seen
+  end
+
+  # we actually need the edges duh
+  def spanning_tree_edges origin, seen = {}
+    return seen if seen.include?(origin) or !@nodes.include?(origin)
+
+    seen[origin] ||= Set.new
+    neighbours(origin).each do |n|
+      next if n == origin
+      seen[origin] << n
+      spanning_tree_edges n, seen
+    end
+
+    seen
+  end
+
   public
 
   # Convert a RGL::DirectedAdjacencyGraph into this graph type.
@@ -46,10 +69,11 @@ class Graph::Implementation
   # @param nodes [Array] An array of (possibly disconnected) nodes.
   # @param edges [Hash] A hash relating nodes to an array-like set of edges.
   #
-  def initialize nodes: [], edges: {}
+  def initialize nodes: [], edges: {}, delta: 1
     @nodes = {} # node metadata (just degrees for now)
     @fwd   = {} # forward edges
     @rev   = {} # reverse edges
+    @delta = 1  # minimum edge length
 
     # now add any elements
     nodes.each { |n| add n } 
@@ -57,6 +81,9 @@ class Graph::Implementation
       (tgt.respond_to?(:to_a) ? tgt.to_a : [tgt]).each { |t| add_edge s, t }
     end
   end
+
+  # make the delta accessible
+  attr_accessor :delta
 
   # Test whether the graph is empty.
   #
@@ -93,12 +120,15 @@ class Graph::Implementation
 
   # Returns the nodes ranked by their (outdegree - indegree).
   #
+  # @param origin [Object] optionally where to start from
   # @yield [node, outdegree, indegree]
   # @return [Array] the ranked nodes
   #
-  def nodes_by_degree &block
+  def nodes_by_degree origin = nil, &block
     # note sort turns a hash into an array of (key-value) pairs
-    @nodes.sort do |a, b|
+    nodes = origin.nil? ? @nodes : spanning_tree_internal(origin)
+
+    nodes.sort do |a, b|
       al = a.last
       bl = b.last
       # compare first by descending degree difference
@@ -111,7 +141,7 @@ class Graph::Implementation
       cmp
     end.map do |node, meta|
       block.call(node, *meta.values_at(:outdegree, :indegree)) if block
-      n
+      node
     end
   end
 
@@ -326,8 +356,8 @@ class Graph::Implementation
 
     @fwd[source][target] = @rev[target][source] = { weight: weight }
 
-    @fwd[source] << target
-    @rev[target] << source
+    #@fwd[source] << target
+    #@rev[target] << source
     @nodes[source][:outdegree] += 1
     @nodes[target][:indegree]  += 1
 
@@ -363,45 +393,6 @@ class Graph::Implementation
     add_edge target, source if remove_edge source, target
   end
 
-  private
-
-  # Sets an initial ranking. Don't run this if the graph has cycles.
-  #
-  # @return [Hash] The mapping of nodes to ranks
-  #
-  def initial_rank
-    scanned = {} # { source => [target] }
-    rank    = {} # { node => rank }
-    # give us the nodes sorted by outdegree - indegree
-    queue   = graph.nodes_by_degree
-
-    # XXX THIS MAY LOOP FOREVER IF THE GRAPH HAS CYCLES
-    until queue.empty?
-      node = queue.shift # shift a node off the queue
-      # test if inbound edges have been scanned
-      nin  = neighbours_in node
-      if nin.empty? or
-          nin.reject { |n| scanned.fetch(n, []).include? node }.empty?
-        # highest indegree rank plus one; defaults to zero
-        rank_for node,
-          rank[node] = (rank.values_at(*nin).compact.max || -1) + 1
-
-        # record the outbound edges as having been scanned
-        s = scanned[node] ||= Set.new
-        s |= neighbours_out(node).to_set
-      else
-        # otherwise push the node back onto the end
-        queue.push node
-      end
-    end
-
-    # might as well return the hash?
-    rank
-  end
-
-  def initial_cut_values
-  end
-
   # Return all the (undirected) connected components in the graph.
   #
   # @return [Array<Set>] An array of nodes representing components.
@@ -429,23 +420,232 @@ class Graph::Implementation
     out
   end
 
-  # we just want this to return true if 
+  # Returns true if there is a forward edge, false if there is a
+  # reverse edge, and nil if there is no edge between `source` and
+  # `target`.
+  #
+  # @param source [Object] the source node
+  # @param target [Object] the target node
+  #
+  # @return [true,false,nil] what the description says
+  #
+  def edge_on? source, target
+    return true  if @fwd.fetch(source, {}).key? target
+    return false if @rev.fetch(source, {}).key? target
+    nil
+  end
+
+  # Empty out the graph.
+  #
+  # @return [Graph::Implementation] return the graph object, emptied.
+  #
+  def clear
+    @nodes.clear
+    @fwd.clear
+    @rev.clear
+
+    self
+  end
+
+  private
+
+  # OKAY GROUND RULES: the GKNV93 paper does not account for the
+  # possibility that there is more than one connected component in the
+  # graph, so the algorithms that they specify either don't have a
+  # provision for operating over more than one component or will loop
+  # infinitely or both, so we have to modify them a bit (eg put in an
+  # "initial" node which may or may not be at the "top" of a tree)
+  #
+  # (dorian you shouldn't be a dick, these guys actually mention this
+  # explicitly in the beginning of the paper)
+
+  # Sets an initial ranking. Don't run this if the graph has cycles.
+  #
+  # @param origin [Object] the node to start searching from
+  # @return [Hash] The mapping of nodes to ranks
+  #
+  def initial_rank origin
+    scanned = {} # { source => [target] }
+    rank    = {} # { node => rank }
+    # give us the nodes sorted by outdegree - indegree
+    queue   = nodes_by_degree origin
+
+    # XXX THIS MAY LOOP FOREVER IF THE GRAPH HAS CYCLES
+    until queue.empty?
+      node = queue.shift # shift a node off the queue
+      # test if inbound edges have been scanned
+      nin  = neighbours_in node
+      if nin.empty? or
+          nin.reject { |n| scanned.fetch(n, []).include? node }.empty?
+        # highest indegree rank plus one; defaults to zero
+        rank_for node,
+          rank[node] = (rank.values_at(*nin).compact.max || -1) + 1
+
+        # record the outbound edges as having been scanned
+        scanned[node] ||= Set.new
+        scanned[node]  |= neighbours_out(node).to_set
+      else
+        # otherwise push the node back onto the end
+        queue.push node
+      end
+    end
+
+    # might as well return the hash?
+    rank
+  end
+
+  # Note that GKNV93 is opaque AF about this, particularly figure 2.3
+  # and what they mean by "head component" and "tail component"; it
+  # turns out they are talking about THE SPANNING TREE. Rather,
+  # though, when they say "sum up the weights of all the edges
+  # connecting the head component to the tail component", they mean
+  # ANYWHERE. In figure 2.3(a) the edge from `h` to `g` (graph
+  # direction is ignored for these trees) has a negative cut value
+  # because we are considering all three nodes `{ e, f, g }` as the
+  # tail component, and we are subtracting `h -> g` (1) minus `a -> e,
+  # a -> f` (2) = -1. Figure 2.3(b) shows that if `h -> g` is replaced
+  # with `a -> e` (and made tight, changing the ranks of `e` and `f`,
+  # CONFUSING), then the other cut values change accordingly.
+  def initial_cut_values
+    
+  end
+
+  # Get a "tight" tree, defined in GKNV93 as a subtree in a connected
+  # component (jklol it isn't defined you have to read between the
+  # lines lol) such that all edges between the nodes are "tight",
+  # itself defined as the edge only spans one ranking.
+  #
+  # XXX you know what? this is probably no good.
+  #
+  #
+  # @param nodes [Set,Hash] the set of nodes in the spanning tree or
+  #   the spanning tree itself (will be converted).
+  #
+  # @return [Hash] representing the tight tree
+  #
+  def tight_tree nodes
+    # get the nodes in the spanning tree
+    nodes = tree_nodes nodes unless nodes.is_a? Set
+
+    out = {}
+
+    nodes.each do |s|
+      # iterate over the non-self neighbours of s
+      neighbours(s).select do |t|
+        s != t and (@nodes[s][:rank] - @nodes[t][:rank]).abs <= @delta
+      end.each do |t|
+        (out[s] ||= Set.new) << t
+        (out[t] ||= Set.new) << s
+      end
+    end
+
+    out
+  end
+  
+  def tight_tree origin, seen = {}
+    return seen if seen.key?(origin) or not @nodes.key?(origin) 
+    seen[origin] ||= []
+
+    orank = @nodes[origin][:rank] || 0
+
+    neighbours(origin).each do |n|
+      next if n == origin or seen.fetch(n, []).include? origin
+
+      nrank = @nodes[n][:rank] || 0
+
+      warn "#{origin}, #{n}, #{nrank - orank}"
+
+      if (nrank - orank).abs <= 1
+        seen[origin] <<
+        seen[n] ||= [] 
+        seen << edge
+
+        tight_tree n, seen
+      end
+    end
+
+    seen
+  end
+
+  # XXX dumbass you need the the tree as a return value from this
+  # thing; feel free to delete this later but not yet lol
+  #
+  # we just want this to return true if it can find a spanning tree
+  # that is tight
   def tight?
-    # note if the graph is not fully connected this will fail
+    # note if the graph is not fully connected this will always be
+    # false BECAUSE by definition it can only be true if the graph is
+    # a single connected component
+
+    # the procedures in the gknv93 paper do not take into account the
+    # possibility that your graph has more than one component (but
+    # they mention it) obviously the actual graphviz implementation
+    # does, so this whole schmozzle is gonna have to account for that
   end
 
   def slack source, target
     return unless @fwd.fetch(source, {})[target]
   end
 
-  def feasible_tree
-    initial_rank
+  # This returns the `Set` of nodes in a spanning tree structure given
+  # as `{ node => Set[*nodes] }`.
+  def tree_nodes tree
+    tree.values.reduce(&:|) | tree.keys
+  end
 
-    until tight?
-      # 
+  def feasible_tree origin
+    # ascribe an initial rank to the tree given by the origin
+    initial_rank origin
+
+    # okay so i think my initial intuition was correct: first we
+    # obtain the spanning tree from the origin, then we get the tight
+    # tree from the spanning tree.
+    stree  = spanning_tree_edges(origin)
+    snodes = tree_nodes stree # (may as well grab this once, now)
+
+    # the tight tree is going to be a subtree of the spanning tree
+    # such that all nodes have distance 1 (or `@delta`, actually)
+    ttree = tight_tree snodes
+
+    # we use the `tree_nodes` function i made to test that ttree is
+    # the same as stree; since ttree is made up of stree we can just
+    # test the sizes:
+    while (tnodes = tree_nodes(ttree)).size < snodes.size
+      # back to the actual algorithm in GKNV93: we look for the first
+      # node in `stree` we can find that is not in `ttree`, "with a
+      # minimal amount of slack". (if the node is not already in
+      # `ttree`, its rank is necessarily farther away than the minimum
+      # distance, which will usually be 1.)
+
+      # how we actually do this is to get all the `snodes` that are not
+      # in `tnodes`, discard all the ones greater than minimum absolute
+      # distance, and then sort (by object ID to guarantee type
+      # equivalence, since we don't know/care what the actual node is)
+      # for consistency.
+
+      # all we care about from this next step is a number `delta` by
+      # which move all the nodes in `ttree` either up (if negative) or
+      # down in rank.
+      (snodes - tnodes).to_a.product(tnodes.to_a).map do |s, t|
+        next if (fwd = edge_on?(s, t)).nil?
+        fwd = @fwd.fetch(s, {})[t]
+        rev = @rev.fetch(s, {})[t]
+      end.compact.
+      candidates = (snodes - tnodes).map do |n|
+        
+      end
+
+      # we then move all the nodes in `ttree` either up or down a rank
+      # depending on where the incident node is
+
+      # then we regenerate `ttree` before looping again
+      ttree = tight_tree stree
     end
 
-    initial_cut_values
+    # finally we generate some initial cut values on the spanning tree
+    initial_cut_values origin
+
+    stree
   end
 
   def leave_edge
@@ -454,8 +654,8 @@ class Graph::Implementation
   def enter_edge
   end
 
-  def rank
-    feasible_tree
+  def rank origin
+    ftree = feasible_tree origin
 
     while (s, t = leave_edge)
       u, v = enter_edge s, t
