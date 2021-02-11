@@ -273,11 +273,13 @@ class Graph::Implementation
   # not exist.
   #
   # @param node [Object]
+  # @param out  [nil, true, false] override direction, nil for both
   # @return [nil, Array]
   #
-  def neighbours node
+  def neighbours node, out = nil
     return unless @nodes[node]
-    (neighbours_out(node) + neighbours_in(node)).uniq
+    return (neighbours_out(node) + neighbours_in(node)).uniq if out.nil?
+    direction ? neighbours_out(node) : neighbours_in(node)
   end
   alias_method :neighbors, :neighbours
   alias_method :incident, :neighbours
@@ -529,6 +531,8 @@ class Graph::Implementation
 
     out = {}
 
+    # the tight tree is a subtree of the spanning tree, so we don't
+    # need to recurse
     nodes.each do |s|
       # iterate over the non-self neighbours of s
       neighbours(s).select do |t|
@@ -540,31 +544,6 @@ class Graph::Implementation
     end
 
     out
-  end
-  
-  def tight_tree origin, seen = {}
-    return seen if seen.key?(origin) or not @nodes.key?(origin) 
-    seen[origin] ||= []
-
-    orank = @nodes[origin][:rank] || 0
-
-    neighbours(origin).each do |n|
-      next if n == origin or seen.fetch(n, []).include? origin
-
-      nrank = @nodes[n][:rank] || 0
-
-      warn "#{origin}, #{n}, #{nrank - orank}"
-
-      if (nrank - orank).abs <= 1
-        seen[origin] <<
-        seen[n] ||= [] 
-        seen << edge
-
-        tight_tree n, seen
-      end
-    end
-
-    seen
   end
 
   # XXX dumbass you need the the tree as a return value from this
@@ -593,56 +572,73 @@ class Graph::Implementation
     tree.values.reduce(&:|) | tree.keys
   end
 
+  # The first step (of the first step) of the graph ranking algorithm
+  # is to produce a "feasible" tree, that is a directed (acyclic) graph
+  # (connected component) where all the edges flow "down" in rank.
+  #
+  # @param origin [Object] an originating node from the component
+  #
+  # @return tree [Hash] the "feasible" spanning tree
+  #
   def feasible_tree origin
-    # ascribe an initial rank to the tree given by the origin
+    # ascribe an initial rank to the `@nodes` in the tree given by the origin
     initial_rank origin
 
     # okay so i think my initial intuition was correct: first we
     # obtain the spanning tree from the origin, then we get the tight
     # tree from the spanning tree.
-    stree  = spanning_tree_edges(origin)
+    stree  = spanning_tree_edges origin
     snodes = tree_nodes stree # (may as well grab this once, now)
 
     # the tight tree is going to be a subtree of the spanning tree
     # such that all nodes have distance 1 (or `@delta`, actually)
     ttree = tight_tree snodes
 
-    # we use the `tree_nodes` function i made to test that ttree is
-    # the same as stree; since ttree is made up of stree we can just
-    # test the sizes:
+    # we use the `tree_nodes` function i made to test that `ttree` is
+    # the same as `stree`; since `ttree` is made up of `stree` we can
+    # just test the sizes:
     while (tnodes = tree_nodes(ttree)).size < snodes.size
       # back to the actual algorithm in GKNV93: we look for the first
       # node in `stree` we can find that is not in `ttree`, "with a
       # minimal amount of slack". (if the node is not already in
       # `ttree`, its rank is necessarily farther away than the minimum
-      # distance, which will usually be 1.)
+      # distance `@delta`, which will usually be 1.)
 
-      # how we actually do this is to get all the `snodes` that are not
-      # in `tnodes`, discard all the ones greater than minimum absolute
-      # distance, and then sort (by object ID to guarantee type
-      # equivalence, since we don't know/care what the actual node is)
-      # for consistency.
+      # ackchyually, all we care about from this next step is a number
+      # `delta` by which move all the nodes in `ttree` either up (if
+      # negative) or down in rank.
+      delta = (snodes - tnodes).map do |nn|
+        nr = rank_for nr # grab the rank of the incident (neighbour) node
 
-      # all we care about from this next step is a number `delta` by
-      # which move all the nodes in `ttree` either up (if negative) or
-      # down in rank.
-      (snodes - tnodes).to_a.product(tnodes.to_a).map do |s, t|
-        next if (fwd = edge_on?(s, t)).nil?
-        fwd = @fwd.fetch(s, {})[t]
-        rev = @rev.fetch(s, {})[t]
-      end.compact.
-      candidates = (snodes - tnodes).map do |n|
-        
-      end
+        # generate separate slack values for the head and the tail
+        hslack, tslack = [true, false].map do |t|
+          # rather than generate the whole cartesian product we take
+          # the intersection of the incident node's neighbours with
+          # the tight tree, from which we find the lowest absolute
+          # value that is higher than the global minimum distance,
+          # `@delta`:
+          (tnodes & neighbours(nn, t)).map do |n|
+            (nr - rank_for(n)).abs - @delta
+          end.select { |slack| slack > 0 }.min
+        end
+        # flip the sign on head
+        hslack = -hslack if hslack
+        [hslack, tslack]
+      end.flatten.compact.sort do |a, b|
+        c =  a.abs <=> b.abs # sort first by absolute value
+        c == 0 ? a <=> b : c # then prefer a shift up over a shift down
+      end.first
 
-      # we then move all the nodes in `ttree` either up or down a rank
-      # depending on where the incident node is
+      # now we move all the elements of `ttree` either up or down by
+      # `delta` (we short-circuit around `rank_for` cause it's easier)
+      ttree.each { |n| @nodes[n][:rank] += delta }
 
       # then we regenerate `ttree` before looping again
-      ttree = tight_tree stree
+      ttree = tight_tree snodes
     end
 
     # finally we generate some initial cut values on the spanning tree
+    # (again this method modifies `@nodes[x][:cut]`)
     initial_cut_values origin
 
     stree
